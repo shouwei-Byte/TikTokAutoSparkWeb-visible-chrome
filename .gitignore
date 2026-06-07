@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.venv/
+venv/
+__pycache__/
+*.pyc
+chrome-profile/
+debug/
+drivers/
+*.log
+.env
+*.pass
+*password*.txt

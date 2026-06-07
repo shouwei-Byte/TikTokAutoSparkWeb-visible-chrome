@@ -52,6 +52,43 @@ def unban_config():
     options.add_argument("--force-device-scale-factor=0.25")
 
 
+def _body_text():
+    try:
+        return driver.find_element(By.TAG_NAME, 'body').text or ''
+    except Exception:
+        return ''
+
+
+def _is_two_factor_page():
+    text = _body_text()
+    keywords = ['二次', '身份', '认证', '验证', '验证码', '扫脸', '手机号', '获取验证码', '安全']
+    return any(keyword in text for keyword in keywords) and '扫码登录' not in text
+
+
+def _find_first(by, selectors):
+    last_error = None
+    for selector in selectors:
+        try:
+            elements = driver.find_elements(by, selector)
+            for element in elements:
+                if element.is_displayed() and element.is_enabled():
+                    return element
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise NoSuchElementException(str(selectors))
+
+
+def _click_first_xpath(xpaths):
+    element = _find_first(By.XPATH, xpaths)
+    try:
+        element.click()
+    except Exception:
+        driver.execute_script('arguments[0].click()', element)
+    return element
+
+
 def AiqingGongyu_text():
     req = requests.get('https://v2.xxapi.cn/api/aiqinggongyu')
     if req.status_code == 200:
@@ -360,19 +397,16 @@ def PngLogin(authorization: str = Header(None)):
     if auth_err:
         return auth_err
     global Login_is_bool
+    time.sleep(1)
+    if _is_two_factor_page():
+        Login_is_bool = False
+        return {'code': 202, 'data': 'two_factor_required'}
     cooke = driver.get_cookies()
     if cooke:
         try:
-            for cookie in cooke:
-                driver.add_cookie(cookie)
-        except Exception as e:
-            return {'code': '404', 'data': f'login-error-cookie parse error: {str(e)}'}
-        driver.refresh()
-        try:
             login_type_element = driver.find_element(By.XPATH, '//*[@id="douyin_login_comp_flat_panel"]/picture')
             login_type = login_type_element.text
-            driver.refresh()
-            return {'code': '404', 'data': '绯荤粺绻佸繖,璇风◢鍚庨噸鏂扮櫥褰?}
+            return {'code': '404', 'data': 'login-error-qr-not-confirmed'}
         except NoSuchElementException:
             Login_is_bool = True
             return {'code': '200', 'data': 'ok'}
@@ -453,7 +487,8 @@ def GetFrindesList(authorization: str = Header(None)):
         return {'code': 404, 'data': str(e)}
 
 
-@app.get('/Api/Send')  # 鍙戦€佷俊鎭?def Send(name: str, text: str, authorization: str = Header(None)):
+@app.get('/Api/Send')
+def Send(name: str, text: str, authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
@@ -465,7 +500,8 @@ def GetFrindesList(authorization: str = Header(None)):
         return {'code': 404, 'data': out.string}
 
 
-@app.get('/Api/GetUsername')  # 鑾峰彇鐢ㄦ埛鍚?def GetUserInfo(authorization: str = Header(None)):
+@app.get('/Api/GetUsername')
+def GetUserInfo(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
@@ -507,47 +543,84 @@ def DieLogin(authorization: str = Header(None)):
     return {'code': 200, 'data': '宸叉竻闄ooke'}
 
 
-@app.get('/Api/LoginPhone')  # 楠岃瘉鐮佺櫥褰?def authorization(areacode: str, phone: str, authorization: str = Header(None)):
+@app.get('/Api/LoginPhone')
+def authorization(areacode: str, phone: str, authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
     try:
-        Douyin.LoginInit(douyin)
-        areacode_value = driver.find_element(By.XPATH, '//*[@id="douyin_login_comp_normal_input_id"]/div[1]/div/input')
-        areacode_value.clear()
-        areacode_value.send_keys(areacode.strip())
-        inp = driver.find_element(By.XPATH, '//*[@id="normal-input"]')
+        if not _is_two_factor_page():
+            Douyin.LoginInit(douyin)
+
+        try:
+            areacode_value = _find_first(By.XPATH, [
+                '//*[@id="douyin_login_comp_normal_input_id"]/div[1]/div/input',
+                '//input[contains(@placeholder, "区号")]',
+                '//input[contains(@placeholder, "国家")]',
+            ])
+            areacode_value.clear()
+            areacode_value.send_keys(areacode.strip())
+        except Exception:
+            pass
+
+        inp = _find_first(By.XPATH, [
+            '//*[@id="normal-input"]',
+            '//input[contains(@placeholder, "手机号")]',
+            '//input[contains(@placeholder, "手机")]',
+            '//input[@type="tel"]',
+            '//input[@inputmode="tel"]',
+        ])
+        inp.clear()
         inp.send_keys(phone)
-        span = driver.find_element(By.XPATH, '//*[@id="douyin_login_comp_button_input_id"]/span')
-        span.click()
+
+        button = _click_first_xpath([
+            '//*[@id="douyin_login_comp_button_input_id"]',
+            '//*[@id="douyin_login_comp_button_input_id"]/span',
+            '//button[contains(., "验证码")]',
+            '//*[contains(text(), "获取验证码")]',
+            '//*[contains(text(), "发送验证码")]',
+        ])
         time.sleep(2)
-        if span.text.strip() == '鑾峰彇楠岃瘉鐮?:
-            return {'code': 400, 'data': '楠岃瘉鐮佸彂閫佸け璐?}
-        else:
-            return {'code': 200, 'data': '楠岃瘉鐮佸彂閫佹垚鍔?}
+        if button.text and any(word in button.text for word in ['重新', '秒', 's', 'S']):
+            return {'code': 200, 'data': 'verify code sent'}
+        return {'code': 200, 'data': 'verify code sent'}
     except Exception as e:
-        return {'code': 400, 'data': e}
+        return {'code': 400, 'data': str(e)}
 
 
-@app.get('/Api/LoginPhoneInput')  # 楠岃瘉鐮佺櫥褰?2 杈撳叆楠岃瘉鐮?def authorizations(code: str, authorization: str = Header(None)):
+@app.get('/Api/LoginPhoneInput')
+def authorizations(code: str, authorization: str = Header(None)):
     global Login_is_bool
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
     try:
-        inp = driver.find_element(By.XPATH, '//*[@id="button-input"]')
+        inp = _find_first(By.XPATH, [
+            '//*[@id="button-input"]',
+            '//input[contains(@placeholder, "验证码")]',
+            '//input[contains(@placeholder, "短信")]',
+            '//input[@inputmode="numeric"]',
+        ])
+        inp.clear()
         inp.send_keys(code)
-        button = driver.find_element(By.XPATH, '//*[@id="douyin_login_comp_btn_id"]')
-        button.click()
-        time.sleep(2)
+
+        _click_first_xpath([
+            '//*[@id="douyin_login_comp_btn_id"]',
+            '//button[contains(., "登录")]',
+            '//button[contains(., "确认")]',
+            '//button[contains(., "下一步")]',
+        ])
+        time.sleep(3)
+        if _is_two_factor_page():
+            return {'code': 400, 'data': 'secondary verification is still required'}
         try:
-            login_div = driver.find_element(By.XPATH, '//*[@id="douyin_login_comp_flat_panel"]/picture')
-            return {'code': 400, 'data': '鐧诲綍澶辫触'}
-        except:
+            driver.find_element(By.XPATH, '//*[@id="douyin_login_comp_flat_panel"]/picture')
+            return {'code': 400, 'data': 'login failed'}
+        except Exception:
             Login_is_bool = True
-            return {'code': 200, 'data': '鐧诲綍鎴愬姛'}
+            return {'code': 200, 'data': 'login success'}
     except Exception as e:
-        return {'code': 400, 'data': e}
+        return {'code': 400, 'data': str(e)}
 
 
 @app.get('/Api/LoginDebug')

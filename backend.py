@@ -12,6 +12,7 @@ import json, base64
 from fastapi import FastAPI, Header, Request, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 import threading, hashlib, secrets
+import subprocess
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHROME_PROFILE_DIR = os.getenv('CHROME_PROFILE_DIR', os.path.join(BASE_DIR, 'chrome-profile'))
@@ -23,14 +24,44 @@ DEFAULT_CHROME_BINARY = (
 
 CHROMEDRIVER_PATH = os.getenv('CHROMEDRIVER_PATH', shutil.which('chromedriver') or '')
 service = Service(executable_path=CHROMEDRIVER_PATH) if os.path.exists(CHROMEDRIVER_PATH) else None
-options = webdriver.ChromeOptions()
 CHROME_BINARY = os.getenv('CHROME_BINARY', DEFAULT_CHROME_BINARY)
-if os.path.exists(CHROME_BINARY):
-    options.binary_location = CHROME_BINARY
 off_ui = False
 
 
-def unban_config():
+def ensure_display_env():
+    if os.name == 'nt':
+        return None
+    if os.getenv('DISPLAY'):
+        return os.getenv('DISPLAY')
+    for candidate in (':91', ':99', ':1'):
+        if os.path.exists(f'/tmp/.X11-unix/X{candidate[1:]}'):
+            os.environ['DISPLAY'] = candidate
+            return candidate
+    return None
+
+
+def cleanup_stale_browser_processes():
+    if os.name == 'nt':
+        return
+    pkill_path = shutil.which('pkill')
+    if pkill_path:
+        for pattern in (CHROMEDRIVER_PATH, CHROME_PROFILE_DIR):
+            if pattern:
+                subprocess.run([pkill_path, '-f', pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    for entry in ('SingletonCookie', 'SingletonLock', 'SingletonSocket', 'DevToolsActivePort'):
+        target = os.path.join(CHROME_PROFILE_DIR, entry)
+        try:
+            if os.path.lexists(target):
+                os.unlink(target)
+        except Exception:
+            pass
+
+
+def build_chrome_options():
+    options = webdriver.ChromeOptions()
+    if os.path.exists(CHROME_BINARY):
+        options.binary_location = CHROME_BINARY
     options.add_experimental_option('excludeSwitches', ['enable-logging'])
     options.add_argument('log-level=3')
     options.add_argument(
@@ -50,6 +81,7 @@ def unban_config():
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--start-maximized')
     options.add_argument("--force-device-scale-factor=0.25")
+    return options
 
 
 def _body_text():
@@ -244,6 +276,10 @@ class Douyin:
 
 init = False
 Login_is_bool = False
+driver = None
+douyin = None
+scheduler_started = False
+browser_lock = threading.Lock()
 app = FastAPI()
 
 # CORS 閰嶇疆
@@ -305,9 +341,107 @@ def run_schedule():
 
 def start_scheduler():
     """鍚姩瀹氭椂浠诲姟璋冨害绾跨▼"""
+    global scheduler_started
+    if scheduler_started:
+        return None
     scheduler_thread = threading.Thread(target=run_schedule, daemon=True)
     scheduler_thread.start()
+    scheduler_started = True
     return scheduler_thread
+
+
+def _reset_browser_state():
+    global init, Login_is_bool, driver, douyin
+    old_driver = driver
+    driver = None
+    douyin = None
+    init = False
+    Login_is_bool = False
+    if old_driver is not None:
+        try:
+            old_driver.quit()
+        except Exception:
+            pass
+
+
+def _driver_alive():
+    if driver is None:
+        return False
+    try:
+        driver.execute_script('return document.readyState')
+        return True
+    except Exception:
+        return False
+
+
+def _detect_logged_in_state():
+    if driver is None:
+        return False
+    try:
+        login_panel = driver.find_elements(By.XPATH, '//*[@id="douyin_login_comp_flat_panel"]/picture')
+        if login_panel:
+            return False
+    except Exception:
+        pass
+
+    xpaths = [
+        '//div[contains(@class, "conversationConversationListwrapper")]',
+        '//div[contains(@data-e2e, "im-list")]',
+        '//div[contains(@class, "im-container")]',
+    ]
+    for xpath in xpaths:
+        try:
+            elements = driver.find_elements(By.XPATH, xpath)
+            if any(element.is_displayed() for element in elements):
+                return True
+        except Exception:
+            continue
+
+    try:
+        return '/chat' in (driver.current_url or '') and len(driver.get_cookies()) > 0
+    except Exception:
+        return False
+
+
+def ensure_browser_ready():
+    global init, driver, douyin, Login_is_bool
+    with browser_lock:
+        if init and _driver_alive():
+            return None
+        if init and not _driver_alive():
+            _reset_browser_state()
+        try:
+            if os.name != 'nt':
+                display_value = ensure_display_env()
+                if not display_value:
+                    return {'code': 500, 'data': '初始化失败: 未找到可用的 DISPLAY/Xvfb 环境'}
+                cleanup_stale_browser_processes()
+            options = build_chrome_options()
+            driver = webdriver.Chrome(service=service, options=options) if service else webdriver.Chrome(options=options)
+            driver.set_window_size(1400, 3200)
+            driver.get('https://www.douyin.com/chat?isPopup=1 ')
+            douyin = Douyin(driver)
+            init = True
+            Login_is_bool = _detect_logged_in_state()
+            start_scheduler()
+            return None
+        except SessionNotCreatedException as e:
+            _reset_browser_state()
+            if "This version of Microsoft Edge WebDriver only supports" in str(e):
+                return {'code': 400, 'data': '闇€瑕佹洿鏂版祻瑙堝櫒椹卞姩!'}
+            return {'code': 400, 'data': f'娴忚鍣ㄤ細璇濆垱寤哄け璐? {str(e)}'}
+        except Exception as e:
+            _reset_browser_state()
+            return {'code': 500, 'data': f'鍒濆鍖栧け璐? {str(e)}'}
+
+
+def require_browser_session():
+    if init and _driver_alive():
+        return None
+    if init and not _driver_alive():
+        _reset_browser_state()
+        return {'code': 400, 'data': '浏览器会话已失效，请重新初始化浏览器'}
+    return {'code': 400, 'data': '浏览器未初始化，请先初始化浏览器'}
 
 
 start_time = datetime.now()
@@ -328,26 +462,12 @@ def Init(authorization: str = Header(None)):
     if auth_err:
         return auth_err
 
-    global init, driver, douyin
-
-    if not init:
-        try:
-            unban_config()
-            driver = webdriver.Chrome(service=service, options=options) if service else webdriver.Chrome(options=options)
-            driver.set_window_size(1400, 3200)
-            driver.get('https://www.douyin.com/chat?isPopup=1 ')
-            douyin = Douyin(driver)
-            init = True
-            start_scheduler()  # 鍚姩璋冨害绾跨▼
-            return {'code': 200, 'data': 'success'}
-        except SessionNotCreatedException as e:
-            if "This version of Microsoft Edge WebDriver only supports" in str(e):
-                return {'code': 400, 'data': '闇€瑕佹洿鏂版祻瑙堝櫒椹卞姩!'}
-            return {'code': 400, 'data': f'娴忚鍣ㄤ細璇濆垱寤哄け璐? {str(e)}'}
-        except Exception as e:
-            return {'code': 500, 'data': f'鍒濆鍖栧け璐? {str(e)}'}
-    else:
+    if init and _driver_alive():
         return {'code': 200, 'data': 'init Repeated!'}
+    init_err = ensure_browser_ready()
+    if init_err:
+        return init_err
+    return {'code': 200, 'data': 'success'}
 
 
 @app.get('/Api/GetInit')
@@ -355,6 +475,8 @@ def GetInit(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    if init and not _driver_alive():
+        _reset_browser_state()
     return {'code': 200, 'data': 'Yes' if init else 'No'}
 
 
@@ -363,6 +485,9 @@ def Login(cooke: str = Body(default=None), gzip_flag: bool = Body(default=False)
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     global Login_is_bool
     if cooke:
         try:
@@ -396,8 +521,14 @@ def PngLogin(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     global Login_is_bool
     time.sleep(1)
+    if _detect_logged_in_state():
+        Login_is_bool = True
+        return {'code': '200', 'data': 'ok'}
     if _is_two_factor_page():
         Login_is_bool = False
         return {'code': 202, 'data': 'two_factor_required'}
@@ -419,6 +550,11 @@ def GetLogin(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    global Login_is_bool
+    if init and not _driver_alive():
+        _reset_browser_state()
+    if init:
+        Login_is_bool = _detect_logged_in_state()
     return {'code': 200, 'data': 'Yes' if Login_is_bool else 'No'}
 
 
@@ -427,6 +563,9 @@ def GetLoginPng(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     try:
         Douyin.LoginInit(douyin)
         try:
@@ -458,6 +597,9 @@ def GetCooke(password: str = Query(None), authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     # 楠岃瘉瀵嗙爜
     if not password or hash_pwd(password) != hash_pwd(_password):
         return {'code': 400, 'data': '瀵嗙爜閿欒'}
@@ -475,6 +617,9 @@ def GetFrindesList(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     try:
         friends_list = douyin.Updara_FrinderList()
         if len(friends_list) == 0:
@@ -492,6 +637,9 @@ def Send(name: str, text: str, authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     Douyin.Updara_FrinderList(douyin)
     out = Douyin.Send_Frinder(douyin, name, text)
     if out.is_bool:
@@ -505,6 +653,9 @@ def GetUserInfo(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     if Login_is_bool:
         match = re.search(r'\\"nickname\\":\\"([^\\"]+)\\"', driver.page_source)
         if match:
@@ -523,6 +674,9 @@ def GetScrlk(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     try:
         driver.save_screenshot("temp.png")
         with open("temp.png", "rb") as f:
@@ -538,6 +692,9 @@ def DieLogin(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     driver.delete_all_cookies()
     driver.refresh()
     return {'code': 200, 'data': '宸叉竻闄ooke'}
@@ -548,6 +705,9 @@ def authorization(areacode: str, phone: str, authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     try:
         if not _is_two_factor_page():
             Douyin.LoginInit(douyin)
@@ -594,6 +754,9 @@ def authorizations(code: str, authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     try:
         inp = _find_first(By.XPATH, [
             '//*[@id="button-input"]',
@@ -629,6 +792,9 @@ def LoginDebug(authorization: str = Header(None)):
     auth_err = require_auth(authorization)
     if auth_err:
         return auth_err
+    browser_err = require_browser_session()
+    if browser_err:
+        return browser_err
     if Login_is_bool == False:
         Login_is_bool = True
         return {'code': 200, 'data': 'OK'}

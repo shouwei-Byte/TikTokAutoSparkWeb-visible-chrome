@@ -1,6 +1,8 @@
-# TikTokAutoSparkWeb
+# TikTokAutoSparkWeb visible chrome
 
 抖音火花助手 Web 管理平台，基于 Vue 3 + Element Plus 构建，提供抖音好友火花自动续期的可视化管理系统。
+
+这个仓库是可视化 Chrome 版本，后端通过 Selenium 驱动本机或服务器上的真实 Chrome 页面，方便完成抖音扫码登录和短信二次验证。
 
 **📨 如果该项目对您有帮助,感谢您留下Start🌟**
 
@@ -15,6 +17,17 @@
 
 ## 默认信息
 账户: admin 密码:123456
+
+## 平台支持
+
+- 支持 Windows
+- 支持 Linux
+- 不依赖 Windows 专有的 Edge Driver 路径
+- Linux 服务器部署时需要可用的图形显示环境，因为这里使用的是可视化 Chrome，不是 headless 模式
+
+Linux 下如果没有桌面环境，请提前准备 X11/Xvfb。
+后端会优先使用显式传入的 `DISPLAY`，也会自动尝试常见的 `:91`、`:99`、`:1`。
+
 ## 功能特性
 
 ### 账户管理
@@ -63,23 +76,15 @@
 ## 项目结构
 
 ```
-admin/
-├── src/
-│   ├── api/
-│   │   └── douyin.js          # API 接口封装
-│   ├── stores/
-│   │   ├── browser.js          # 浏览器/登录状态 store
-│   │   └── user.js             # 用户认证 store
-│   ├── views/
-│   │   ├── Home.vue            # 首页看板
-│   │   ├── Friends.vue         # 好友列表
-│   │   ├── Tasks.vue           # 定时任务管理
-│   │   ├── Settings.vue         # 系统设置
-│   │   └── Login.vue           # 登录页
-│   ├── App.vue
-│   ├── main.js
-│   └── router/index.js
-├── dist/                       # 生产构建产物
+.
+├── src/                        # 前端页面与状态管理
+├── public/                     # 前端静态资源
+├── backend.py                  # FastAPI + Selenium 后端
+├── requirements.txt            # 后端依赖
+├── start-backend.ps1           # Windows 启动脚本
+├── start-backend.sh            # Linux 启动脚本
+├── LOCAL_RUN.md                # 本地运行补充说明
+├── dist/                       # 前端生产构建产物
 ├── vite.config.js              # Vite 配置（含 API 代理）
 └── package.json
 ```
@@ -89,24 +94,52 @@ admin/
 ## 快速开始
 
 ### 环境要求
-- Node.js >= 16
-- Python 3.8+（后端服务）
-- Chrome / Chromium（自动化依赖）
+- Node.js 18+
+- Python 3.10+
+- Google Chrome
+- 与 Chrome 版本匹配的 Chromedriver，并确保可通过 `PATH` 找到，或显式传入环境变量
 
-### 安装依赖
+可选环境变量：
 
 ```bash
-cd Web/admin
-npm install
+CHROME_BINARY=/path/to/chrome
+CHROMEDRIVER_PATH=/path/to/chromedriver
+CHROME_PROFILE_DIR=./chrome-profile
+PORT=9844
+DISPLAY=:91
 ```
 
-### 开发模式
+### Windows 启动
 
-```bash
+```powershell
+.\start-backend.ps1
+npm install
 npm run dev
 ```
 
-访问 `http://localhost:5173`，开发服务器会自动代理 `/api` 请求到后端。
+打开 `http://localhost:5173`。
+
+### Linux 启动
+
+```bash
+chmod +x ./start-backend.sh
+./start-backend.sh
+npm install
+npm run dev
+```
+
+打开 `http://localhost:5173`。
+
+### Linux 服务器额外说明
+
+这个版本依赖可视化 Chrome 页面，不是 headless 模式。
+
+如果你部署在 Linux 服务器上，请确保满足以下任一条件：
+
+- 已有桌面会话并能提供 `DISPLAY`
+- 已提前启动 Xvfb
+
+如果没有可用显示环境，后端初始化浏览器时会失败。
 
 ### 生产构建
 
@@ -140,6 +173,7 @@ npm run build
 ```
 
 > 后端默认端口为 `9844`，请确保 FastAPI 后端已启动并监听该端口。
+> Linux 服务器场景下，也请确认 Chrome 可正常连接到已有显示环境。
 
 ---
 

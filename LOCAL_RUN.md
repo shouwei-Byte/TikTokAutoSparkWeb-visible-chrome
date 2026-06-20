@@ -39,6 +39,10 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+If you run this on a Linux server, make sure Chrome has a usable display session.
+This fork uses visible Chrome, so you need an existing desktop/X11 session or Xvfb.
+You can export `DISPLAY` explicitly, and the backend also tries common displays such as `:91`, `:99`, and `:1`.
+
 Default admin login:
 
 ```text

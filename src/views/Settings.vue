@@ -355,14 +355,39 @@ const fetchFriendsList = async () => {
   }
 }
 
+const syncSettingsStatus = async ({ resetUsername = false } = {}) => {
+  if (resetUsername) {
+    username.value = ''
+    usernameLoaded.value = false
+    localStorage.removeItem('douyin_username')
+    localStorage.removeItem('douyin_username_loaded')
+  }
+  await checkLoginStatus()
+  await fetchLastLoginIP()
+  if (loginStatus.value) {
+    await fetchUsername()
+    await fetchFriendsList()
+  }
+}
+
 const handleRefreshCode = async () => {
   refreshLoading.value = true
   try {
+    await syncSettingsStatus()
+    if (loginStatus.value) {
+      qrDialogVisible.value = false
+      ElMessage.success('当前浏览器已登录，无需刷新二维码')
+      return
+    }
     // 先初始化浏览器
     await initBrowser()
     // 获取新二维码
     const res = await getLoginPng()
-    if (res.data) {
+    if (res.status === 'already_logged_in') {
+      await syncSettingsStatus({ resetUsername: true })
+      qrDialogVisible.value = false
+      ElMessage.success('当前浏览器已登录，无需扫码')
+    } else if (res.data) {
       qrcodeUrl.value = res.data
       qrDialogVisible.value = true
       ElMessage.success('刷新成功')
@@ -587,14 +612,24 @@ const handleLogin = async () => {
   loginLoading.value = true
   loading.value = true
   qrcodeUrl.value = ''
-  qrDialogVisible.value = true
 
   try {
+    await syncSettingsStatus()
+    if (loginStatus.value) {
+      qrDialogVisible.value = false
+      ElMessage.success('当前浏览器已登录，无需扫码')
+      return
+    }
+    qrDialogVisible.value = true
     // 先初始化浏览器
     await initBrowser()
     // 获取二维码
     const res = await getLoginPng()
-    if (res.data) {
+    if (res.status === 'already_logged_in') {
+      await syncSettingsStatus({ resetUsername: true })
+      qrDialogVisible.value = false
+      ElMessage.success('当前浏览器已登录，无需扫码')
+    } else if (res.data) {
       qrcodeUrl.value = res.data
       ElMessage.success('请使用抖音App扫码登录')
     } else {
@@ -611,17 +646,12 @@ const handleLogin = async () => {
 }
 
 onMounted(async () => {
-  // 首次加载
-  if (!settingsLoaded.value) {
-    await checkLoginStatus()
-    await fetchLastLoginIP()
-    localStorage.setItem('douyin_settings_loaded', '1')
-  }
+  await syncSettingsStatus()
+  localStorage.setItem('douyin_settings_loaded', '1')
 })
 
 onActivated(async () => {
-  // 每次进入页面，IP 从缓存读取
-  lastLoginIP.value = localStorage.getItem('douyin_last_login_ip') || '加载中...'
+  await syncSettingsStatus()
 })
 </script>
 

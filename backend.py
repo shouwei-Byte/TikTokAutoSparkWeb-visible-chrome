@@ -566,6 +566,10 @@ def GetLoginPng(authorization: str = Header(None)):
     browser_err = require_browser_session()
     if browser_err:
         return browser_err
+    global Login_is_bool
+    if _detect_logged_in_state():
+        Login_is_bool = True
+        return {'code': 200, 'data': '', 'status': 'already_logged_in'}
     try:
         Douyin.LoginInit(douyin)
         try:
@@ -589,6 +593,9 @@ def GetLoginPng(authorization: str = Header(None)):
         else:
             return {'code': 404, 'data': 'cant find LoginPng src attribute'}
     except NoSuchElementException:
+        if _detect_logged_in_state():
+            Login_is_bool = True
+            return {'code': 200, 'data': '', 'status': 'already_logged_in'}
         return {'code': 404, 'data': 'cant find img element'}
 
 
